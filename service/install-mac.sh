@@ -2,11 +2,18 @@
 set -euo pipefail
 
 # claude-proxy — macOS LaunchAgent installer
-# Builds the Go binary (if needed), detects claude CLI, reads .env,
-# generates a plist, and loads the service.
+#
+# Resolves a binary in this order:
+#   1. bin/claude-proxy in the project tree (existing build)
+#   2. `go build` if Go is installed
+#   3. Pre-built release binary downloaded from GitHub (no Go needed)
+#
+# Then detects claude CLI, reads .env, generates a plist, and loads the service.
 
 LABEL="com.claude-proxy"
 PLIST_PATH="$HOME/Library/LaunchAgents/${LABEL}.plist"
+RELEASE_REPO="s1hon/claude-proxy"
+RELEASE_TAG="${CLAUDE_PROXY_RELEASE:-latest}"
 
 # --- Detect paths ---
 
@@ -27,19 +34,44 @@ echo "  Project dir: $PROJECT_DIR"
 echo "  Binary:      $BIN_PATH"
 echo "  Claude:      $CLAUDE_BIN"
 
-# --- Build binary if missing or stale ---
+# --- Resolve binary: existing → build → download ---
 
 if [[ ! -x "$BIN_PATH" ]]; then
-  echo ""
-  echo "Binary not found, building..."
+  mkdir -p "$(dirname "$BIN_PATH")"
   GO_BIN="$(which go 2>/dev/null || true)"
-  if [[ -z "$GO_BIN" ]]; then
-    echo "ERROR: go not found in PATH (needed to build the binary)"
-    echo "  Install Go: brew install go"
-    exit 1
+  if [[ -n "$GO_BIN" ]]; then
+    echo ""
+    echo "Building from source with $GO_BIN..."
+    (cd "$PROJECT_DIR" && "$GO_BIN" build -ldflags="-s -w" -o "$BIN_PATH" ./cmd/claude-proxy)
+    echo "  Built: $BIN_PATH"
+  else
+    # No Go available — download a pre-built release binary.
+    ARCH="$(uname -m)"
+    case "$ARCH" in
+      arm64|aarch64) ASSET="claude-proxy-darwin-arm64" ;;
+      x86_64|amd64)  ASSET="claude-proxy-darwin-amd64" ;;
+      *) echo "ERROR: unsupported architecture: $ARCH"; exit 1 ;;
+    esac
+    if [[ "$RELEASE_TAG" == "latest" ]]; then
+      URL="https://github.com/${RELEASE_REPO}/releases/latest/download/${ASSET}"
+    else
+      URL="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}/${ASSET}"
+    fi
+    echo ""
+    echo "Go not found — downloading pre-built binary"
+    echo "  $URL"
+    if ! curl -fSL --progress-bar -o "$BIN_PATH" "$URL"; then
+      echo "ERROR: failed to download $URL"
+      echo "  Either install Go (brew install go) and re-run,"
+      echo "  or fetch manually from https://github.com/${RELEASE_REPO}/releases"
+      rm -f "$BIN_PATH"
+      exit 1
+    fi
+    chmod +x "$BIN_PATH"
+    # macOS Gatekeeper: strip quarantine so launchd can execute it.
+    xattr -d com.apple.quarantine "$BIN_PATH" 2>/dev/null || true
+    echo "  Downloaded: $BIN_PATH"
   fi
-  (cd "$PROJECT_DIR" && "$GO_BIN" build -o "$BIN_PATH" ./cmd/claude-proxy)
-  echo "  Built: $BIN_PATH"
 fi
 
 # --- Check claude auth ---
