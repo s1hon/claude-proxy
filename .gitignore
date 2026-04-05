@@ -11,6 +11,7 @@ state.json.tmp
 *.log
 claude-proxy.log
 claude-proxy.err.log
+debug_requests.jsonl
 
 # Environment / secrets
 .env

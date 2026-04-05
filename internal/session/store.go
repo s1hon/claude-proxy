@@ -28,6 +28,13 @@ type Store struct {
 	mu          sync.RWMutex
 	channelMap  map[string]Entry
 	responseMap map[string]Entry
+
+	// keyLocks serialises concurrent requests that target the same routing
+	// key. Without this, two simultaneous refresh decisions race on
+	// LastCompactionHash and both allocate fresh session IDs — one of them
+	// is then discarded when Save() runs. Held for the full handler
+	// lifetime, not just storage writes.
+	keyLocks sync.Map // map[string]*sync.Mutex
 }
 
 // persisted is the on-disk state.json schema.
@@ -168,6 +175,18 @@ func (s *Store) SetResponseKey(text, sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.responseMap[key] = Entry{SessionID: sessionID, CreatedAt: now, UpdatedAt: now}
+}
+
+// LockKey returns an unlock function after acquiring the per-routing-key
+// mutex. Callers MUST invoke the returned function exactly once, typically
+// with defer. This guarantees that refresh detection, session-ID allocation,
+// CLI invocation and persistence for a single routing key run serially even
+// when multiple concurrent HTTP requests land on the same bucket.
+func (s *Store) LockKey(key string) func() {
+	actual, _ := s.keyLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // DeleteByChannel removes a channel entry.

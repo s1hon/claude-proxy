@@ -216,6 +216,109 @@ func TestRoutingKey(t *testing.T) {
 	}
 }
 
+// TestOpenClawInboundMeta verifies that the OpenClaw routing envelope
+// embedded in a system prompt is preferred over legacy fields and that
+// different account_id / chat_id / forum-topic combinations produce
+// distinct routing keys. Regression guard for the "agents 回錯訊息" bleed.
+func TestOpenClawInboundMeta(t *testing.T) {
+	mkSys := func(meta string) openai.Message {
+		body := "You are a personal assistant running inside OpenClaw.\n\n" +
+			"- **Name:** 厚蛋燒\n" +
+			"- **Name:** 宏宏\n\n" +
+			"Treat it as authoritative metadata about the current message context.\n\n" +
+			"```json\n" + meta + "\n```\n## Reactions\n"
+		return openai.Message{Role: "system", Content: rawString(body)}
+	}
+	mkUser := func(topicJSON string) openai.Message {
+		body := "Conversation info (untrusted metadata):\n```json\n" + topicJSON + "\n```\n\n你是誰"
+		wrap := `[{"text":` + string(mustJSON(body)) + `,"type":"text"}]`
+		return openai.Message{Role: "user", Content: json.RawMessage(wrap)}
+	}
+
+	cases := []struct {
+		name        string
+		msgs        []openai.Message
+		wantChannel string
+		wantAgent   string
+	}{
+		{
+			name: "main agent DM",
+			msgs: []openai.Message{
+				mkSys(`{"schema":"openclaw.inbound_meta.v1","chat_id":"telegram:6783429660","account_id":"main","channel":"telegram","provider":"telegram","surface":"telegram","chat_type":"direct"}`),
+				mkUser(`{"message_id":"4636","sender_id":"6783429660"}`),
+			},
+			wantChannel: "dm:telegram:6783429660",
+			wantAgent:   "main",
+		},
+		{
+			name: "fitness agent DM (筋肉燒)",
+			msgs: []openai.Message{
+				mkSys(`{"schema":"openclaw.inbound_meta.v1","chat_id":"telegram:6783429660","account_id":"fitness","channel":"telegram","provider":"telegram","surface":"telegram","chat_type":"direct"}`),
+				mkUser(`{"message_id":"1809","sender_id":"6783429660"}`),
+			},
+			wantChannel: "dm:telegram:6783429660",
+			wantAgent:   "fitness",
+		},
+		{
+			name: "main agent forum group with topic",
+			msgs: []openai.Message{
+				mkSys(`{"schema":"openclaw.inbound_meta.v1","chat_id":"telegram:-1003795479269","account_id":"main","channel":"telegram","provider":"telegram","surface":"telegram","chat_type":"group"}`),
+				mkUser(`{"message_id":"3221","conversation_label":"燒烤店 🍖 id:-1003795479269 topic:1","topic_id":"1","is_forum":true,"is_group_chat":true}`),
+			},
+			wantChannel: "telegram:-1003795479269/topic:1",
+			wantAgent:   "main",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := ExtractChannelLabel(tc.msgs)
+			ag := ExtractAgentName(tc.msgs)
+			if ch != tc.wantChannel {
+				t.Errorf("channel = %q, want %q", ch, tc.wantChannel)
+			}
+			if ag != tc.wantAgent {
+				t.Errorf("agent = %q, want %q", ag, tc.wantAgent)
+			}
+		})
+	}
+
+	// Cross-check: two of the three cases above produce distinct routing
+	// keys even though they share the same chat_id — the fix eliminates the
+	// "different persona same bucket" bleed.
+	dmMain := RoutingKey(
+		ExtractChannelLabel(cases[0].msgs),
+		ExtractAgentName(cases[0].msgs),
+	)
+	dmFit := RoutingKey(
+		ExtractChannelLabel(cases[1].msgs),
+		ExtractAgentName(cases[1].msgs),
+	)
+	if dmMain == dmFit {
+		t.Fatalf("main and fitness DM collapsed into same routing key %q", dmMain)
+	}
+}
+
+// TestBulletedNameTag guards the `- **Name:**` bullet-list form used by
+// OpenClaw IDENTITY.md — the old anchored regex silently returned
+// "default" for these and caused everyone to share one bucket.
+func TestBulletedNameTag(t *testing.T) {
+	msgs := []openai.Message{
+		{Role: "system", Content: rawString("# IDENTITY.md\n\n- **Name:** 厚蛋燒\n- **Vibe:** chill\n")},
+	}
+	if got := ExtractAgentName(msgs); got != "厚蛋燒" {
+		t.Errorf("ExtractAgentName = %q, want %q", got, "厚蛋燒")
+	}
+}
+
+func mustJSON(s string) []byte {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
 // TestNewSessionID checks the UUID v4-like format.
 func TestNewSessionID(t *testing.T) {
 	for i := 0; i < 10; i++ {

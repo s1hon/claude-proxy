@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/s1hon/claude-proxy/internal/claude"
@@ -19,6 +23,10 @@ import (
 	"github.com/s1hon/claude-proxy/internal/stats"
 	"github.com/s1hon/claude-proxy/internal/tools"
 )
+
+// dumpMu serialises appends to debug_requests.jsonl so concurrent handlers
+// do not interleave bytes within a single line.
+var dumpMu sync.Mutex
 
 const (
 	compactionPrefix  = "The conversation history before this point was compacted into the following summary:"
@@ -91,9 +99,15 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Be lenient with unknown fields — many OpenAI clients add extras.
+	// Read raw body so we can both decode it and dump it to
+	// debug_requests.jsonl for post-hoc inspection.
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("read body: %v", err))
+		return
+	}
 	var req openai.ChatCompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
 		return
 	}
@@ -102,7 +116,20 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compute the routing key up-front so we can serialise all same-key
+	// requests before any session lookup or refresh decision runs. Without
+	// this lock, two concurrent requests for the same conversation race on
+	// LastCompactionHash / sessionID and the loser's session gets silently
+	// overwritten — that was the source of the "agent 回錯訊息" bleed.
+	channel := session.ExtractChannelLabel(req.Messages)
+	agent := session.ExtractAgentName(req.Messages)
+	routingKey := session.RoutingKey(channel, agent)
+	unlock := h.deps.Store.LockKey(routingKey)
+	defer unlock()
+
 	inv := h.prepare(&req)
+	h.logDiagnostics(r, &req, inv)
+	h.dumpRequest(r, rawBody, inv)
 
 	release, ok := h.deps.Limiter.Acquire(inv.routingKey)
 	if !ok {
@@ -359,6 +386,103 @@ func (h *Handler) serveStream(ctx context.Context, w http.ResponseWriter,
 	}
 	_ = sse.sendFinish(finish, &usage)
 	sse.done()
+}
+
+// dumpRequest appends the full incoming request (headers + body) and the
+// proxy's parsed decision to <stateDir>/debug_requests.jsonl as a single
+// JSON line. Runs on every chat request so operators tailing the file can
+// see exactly what every client is sending. Sensitive auth headers are
+// redacted. Disabled when CLAUDE_PROXY_DEBUG_DUMP=0.
+func (h *Handler) dumpRequest(r *http.Request, raw []byte, inv invocation) {
+	if os.Getenv("CLAUDE_PROXY_DEBUG_DUMP") == "0" {
+		return
+	}
+	dir := filepath.Dir(h.deps.Config.StatePath)
+	if dir == "" || dir == "." {
+		dir = "."
+	}
+	path := filepath.Join(dir, "debug_requests.jsonl")
+
+	headers := make(map[string]string, len(r.Header))
+	for k, v := range r.Header {
+		kl := strings.ToLower(k)
+		if kl == "authorization" || kl == "cookie" || kl == "x-api-key" || kl == "proxy-authorization" {
+			headers[k] = "<redacted>"
+			continue
+		}
+		headers[k] = strings.Join(v, ", ")
+	}
+
+	// Keep bodies bounded so one weird client can't blow up the file.
+	const maxBody = 256 * 1024
+	var body any
+	if len(raw) > maxBody {
+		body = map[string]any{
+			"_truncated": true,
+			"_size":      len(raw),
+			"_preview":   string(raw[:4096]),
+		}
+	} else if err := json.Unmarshal(raw, &body); err != nil {
+		body = map[string]any{"_raw": string(raw)}
+	}
+
+	entry := map[string]any{
+		"ts":         time.Now().Format(time.RFC3339Nano),
+		"remote":     r.RemoteAddr,
+		"method":     r.Method,
+		"path":       r.URL.Path,
+		"headers":    headers,
+		"body":       body,
+		"legacy_rk":  inv.routingKey,
+		"sid":        inv.sessionID,
+		"mode":       inv.mode,
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		log.Printf("[dump] marshal error: %v", err)
+		return
+	}
+
+	dumpMu.Lock()
+	defer dumpMu.Unlock()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("[dump] open %s: %v", path, err)
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(line)
+	_, _ = f.Write([]byte{'\n'})
+}
+
+// logDiagnostics emits one [diag] line per request with the routing key,
+// the session ID we ended up using, and a short preview of the last user
+// message. Useful for tailing the log during live traffic to verify that
+// distinct conversations land in distinct buckets.
+func (h *Handler) logDiagnostics(_ *http.Request, req *openai.ChatCompletionRequest, inv invocation) {
+	preview := ""
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role != "user" {
+			continue
+		}
+		c := convert.ExtractContent(req.Messages[i].Content)
+		if c == "" {
+			continue
+		}
+		// Strip metadata envelopes so the preview shows the actual user
+		// utterance, not the Conversation info header.
+		if idx := strings.LastIndex(c, "```\n\n"); idx >= 0 {
+			c = c[idx+5:]
+		}
+		preview = strings.TrimSpace(c)
+		if len(preview) > 80 {
+			preview = preview[:80]
+		}
+		break
+	}
+	log.Printf("[diag] rk=%q sid=%s mode=%s model=%s nmsgs=%d preview=%q",
+		inv.routingKey, truncate(inv.sessionID, 8), inv.mode, req.Model,
+		len(req.Messages), preview)
 }
 
 // persist writes the result of one successful invocation back to the store
