@@ -1,0 +1,32 @@
+# Build artefacts
+/bin/
+*.exe
+*.out
+
+# Runtime state & logs
+state.json
+state.json.tmp
+.state-*.json.tmp
+*.log
+claude-proxy.log
+claude-proxy.err.log
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Tool-specific local dirs (personal, not for source control)
+/.claude/
+/.omc/
+
+# Go coverage
+*.out
+coverage.html

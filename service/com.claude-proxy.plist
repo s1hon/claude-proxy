@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  claude-proxy LaunchAgent template.
+  Recommended: run ./service/install-mac.sh instead of editing this manually —
+  it auto-detects paths, builds the binary, reads .env, and installs the service.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude-proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOUR_USERNAME/dev/claude-proxy/bin/claude-proxy</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USERNAME/dev/claude-proxy</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/Users/YOUR_USERNAME/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/YOUR_USERNAME</string>
+        <key>CLAUDE_BIN</key>
+        <string>/Users/YOUR_USERNAME/.local/bin/claude</string>
+        <!-- Override port/model aliases here if desired, e.g.: -->
+        <!-- <key>OPUS_MODEL</key>   <string>opus[1m]</string> -->
+        <!-- <key>SONNET_MODEL</key> <string>sonnet[1m]</string> -->
+        <!-- <key>REWRITE_TERMS</key><string>OpenClaw,openclaw</string> -->
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/dev/claude-proxy/claude-proxy.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/dev/claude-proxy/claude-proxy.err.log</string>
+</dict>
+</plist>
