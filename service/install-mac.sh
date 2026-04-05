@@ -170,11 +170,15 @@ ${ENV_ENTRIES}    </dict>
     <key>ProcessType</key>
     <string>Background</string>
 
+    <!-- Merge stdout and stderr into a single log file. Go's log package
+         writes to stderr by default, so without this both streams would
+         be split across two files with the more interesting output ending
+         up in claude-proxy.err.log. -->
     <key>StandardOutPath</key>
     <string>${PROJECT_DIR}/claude-proxy.log</string>
 
     <key>StandardErrorPath</key>
-    <string>${PROJECT_DIR}/claude-proxy.err.log</string>
+    <string>${PROJECT_DIR}/claude-proxy.log</string>
 </dict>
 </plist>
 PLIST
@@ -214,5 +218,4 @@ echo "  Status:   launchctl print $DOMAIN/$LABEL | head"
 echo "  Restart:  launchctl bootout $DOMAIN/$LABEL && launchctl bootstrap $DOMAIN $PLIST_PATH"
 echo "  Stop:     launchctl bootout $DOMAIN/$LABEL"
 echo "  Logs:     tail -f $PROJECT_DIR/claude-proxy.log"
-echo "  Errors:   tail -f $PROJECT_DIR/claude-proxy.err.log"
 echo "  Health:   curl http://127.0.0.1:3456/health"
