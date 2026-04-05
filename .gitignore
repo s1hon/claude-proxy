@@ -1,5 +1,6 @@
 # Build artefacts
 /bin/
+/dist/
 *.exe
 *.out
 
