@@ -1,6 +1,6 @@
 # claude-proxy
 
-一個用 Go 寫的 OpenAI 相容 HTTP 代理,把任何支援 OpenAI API 的 Agent(例如 [OpenClaw](https://github.com/openclaw/openclaw))橋接到本機已登入的 [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)。
+一個用 Go 寫的 OpenAI 相容 HTTP 代理,把任何支援 OpenAI API 的 Agent(例如 [OpenClaw](https://github.com/openclaw/openclaw)、[hermes-agent](https://github.com/nousresearch/hermes-agent))橋接到本機已登入的 [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)。
 
 只用 Go 標準函式庫,零外部依賴。
 
@@ -156,6 +156,59 @@ curl http://127.0.0.1:3456/health
 - 要 1M 上下文必須啟動 proxy 時設 `OPUS_MODEL=opus[1m] SONNET_MODEL=sonnet[1m]`
 - Haiku 沒有 1M 變體,上限為 200K
 - `maxTokens` 對 proxy 無效,只是告訴 OpenClaw 模型能吐多少 output token
+
+---
+
+## Session Routing
+
+Proxy 會根據以下優先順序辨識不同的對話,確保 session 隔離:
+
+1. **OpenClaw envelope**:system prompt 中的 `openclaw.inbound_meta.v1` JSON(chat_id + account_id)
+2. **Legacy Discord**:user message 中的 `Conversation info (untrusted metadata)` JSON(guild/channel/username)
+3. **HTTP header**:`X-Hermes-Session-Id`(hermes-agent)或通用的 `X-Session-Id`
+4. **Fallback**:所有請求共用同一個 session
+
+只要 client 送出上述任一信號,proxy 就能自動隔離不同對話。
+
+### Model 驗證
+
+Proxy 只接受以下 model ID,其他 model(如 `google/gemini-3-flash-preview`)會直接回 400:
+
+- `claude-opus-latest` / `claude-opus` / `opus`
+- `claude-sonnet-latest` / `claude-sonnet` / `sonnet`
+- `claude-haiku-latest` / `claude-haiku` / `haiku`
+
+---
+
+## hermes-agent 設定範例
+
+在 `~/.hermes/config.yaml`(或 `~/.hermes/profiles/<name>/config.yaml`)的 `model:` 區段設定:
+
+```yaml
+model:
+  default: "claude-opus-latest"
+  provider: "custom"
+  api_key: "not-needed"
+  base_url: "http://localhost:3456/v1"
+```
+
+hermes-agent 需要額外 patch `run_agent.py` 在 `_build_api_kwargs()` 的 return 前注入 session header:
+
+```python
+if self.session_id:
+    api_kwargs["extra_headers"] = {"X-Hermes-Session-Id": self.session_id}
+```
+
+### OpenClaw vs hermes-agent 設定差異
+
+| | OpenClaw | hermes-agent |
+|---|---|---|
+| **Session 隔離** | 自動(system prompt 內嵌 `inbound_meta.v1` envelope) | 需 patch `run_agent.py` 送出 `X-Hermes-Session-Id` header |
+| **Model ID** | 直接在 `openclaw.json` 的 models array 裡指定 | 在 `config.yaml` 的 `model.default` 指定 |
+| **API key** | `openclaw.json` 填任意非空字串 | `config.yaml` 填 `"not-needed"` |
+| **Auxiliary models** | 不經過 proxy | 預設也會經過 proxy(因 `auto` fallback);不影響功能,proxy 會回 400 拒絕不認識的 model |
+| **Tool execution** | OpenClaw 負責 | hermes-agent 負責 |
+| **關鍵字替換** | `REWRITE_TERMS=OpenClaw,openclaw`(預設啟用) | 不影響(hermes 請求中不含 OpenClaw 字串) |
 
 ---
 

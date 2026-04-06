@@ -115,19 +115,23 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "messages required")
 		return
 	}
+	if !claude.KnownModel(req.Model) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported model: %s", req.Model))
+		return
+	}
 
 	// Compute the routing key up-front so we can serialise all same-key
 	// requests before any session lookup or refresh decision runs. Without
 	// this lock, two concurrent requests for the same conversation race on
 	// LastCompactionHash / sessionID and the loser's session gets silently
 	// overwritten — that was the source of the "agent 回錯訊息" bleed.
-	channel := session.ExtractChannelLabel(req.Messages)
+	channel := session.ExtractChannelLabelWithHeaders(req.Messages, r.Header)
 	agent := session.ExtractAgentName(req.Messages)
 	routingKey := session.RoutingKey(channel, agent)
 	unlock := h.deps.Store.LockKey(routingKey)
 	defer unlock()
 
-	inv := h.prepare(&req)
+	inv := h.prepare(&req, r.Header)
 	h.logDiagnostics(r, &req, inv)
 	h.dumpRequest(r, rawBody, inv)
 
@@ -156,8 +160,8 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 
 // prepare builds the full invocation plan: routing key, session lookup,
 // compaction detection, and the final system/prompt text.
-func (h *Handler) prepare(req *openai.ChatCompletionRequest) invocation {
-	channel := session.ExtractChannelLabel(req.Messages)
+func (h *Handler) prepare(req *openai.ChatCompletionRequest, headers http.Header) invocation {
+	channel := session.ExtractChannelLabelWithHeaders(req.Messages, headers)
 	agent := session.ExtractAgentName(req.Messages)
 	routingKey := session.RoutingKey(channel, agent)
 

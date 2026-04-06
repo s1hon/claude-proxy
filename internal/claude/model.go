@@ -28,6 +28,20 @@ func ResolveModel(modelID, opus, sonnet, haiku string) string {
 	}
 }
 
+// KnownModel reports whether modelID is a recognised alias that ResolveModel
+// can map to a CLI model. Unknown IDs (e.g. "google/gemini-3-flash-preview")
+// should be rejected at the HTTP layer.
+func KnownModel(modelID string) bool {
+	switch modelID {
+	case "claude-opus-latest", "claude-opus", "opus",
+		"claude-sonnet-latest", "claude-sonnet", "sonnet",
+		"claude-haiku-latest", "claude-haiku", "haiku":
+		return true
+	default:
+		return false
+	}
+}
+
 // ContextWindow returns 1,000,000 for 1m-context variants, 200,000 otherwise.
 func ContextWindow(resolvedModel string) int {
 	if strings.Contains(resolvedModel, "[1m]") {
