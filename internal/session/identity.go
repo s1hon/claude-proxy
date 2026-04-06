@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"net/http"
 	"regexp"
 	"strings"
 
@@ -204,24 +203,6 @@ func ExtractAgentName(msgs []openai.Message) string {
 		}
 	}
 	return "default"
-}
-
-// ExtractChannelLabelWithHeaders extends ExtractChannelLabel with HTTP header
-// fallbacks. When no message-based routing signal is found, it checks
-// X-Hermes-Session-Id (hermes-agent) and then X-Session-Id (generic) headers.
-// Header-sourced values are prefixed with "hsid:" to avoid collisions with
-// message-based routing keys.
-func ExtractChannelLabelWithHeaders(msgs []openai.Message, headers http.Header) string {
-	if label := ExtractChannelLabel(msgs); label != "" {
-		return label
-	}
-	if v := headers.Get("X-Hermes-Session-Id"); v != "" {
-		return "hsid:" + v
-	}
-	if v := headers.Get("X-Session-Id"); v != "" {
-		return "hsid:" + v
-	}
-	return ""
 }
 
 // RoutingKey combines channel and agent into the primary session lookup key.
